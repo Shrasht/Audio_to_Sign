@@ -7,6 +7,7 @@ import datetime
 import time
 from recorder import AudioRecorder, list_audio_devices
 from isl_convert import EnglishToISLSentenceConverter
+from translation_evaluator import TranslationEvaluator
 
 st.set_page_config(
     page_title="Speech to ISL Converter",
@@ -47,14 +48,49 @@ st.markdown("""
         padding: 20px;
         box-shadow: 0 4px 8px rgba(0,0,0,0.1);
         margin-bottom: 20px;
-    }
-    .result-text {
+    }    .result-text {
         font-size: 1.5rem;
         padding: 15px;
         color:black;
         background-color: #e3f2fd;
         border-radius: 10px;
         margin-top: 10px;
+    }
+    .metric-card {
+        background-color: #f1f8fe;
+        border-radius: 8px;
+        padding: 15px;
+        margin: 10px 0;
+        border-left: 4px solid #1E88E5;
+    }
+    .metric-value {
+        font-size: 1.8rem;
+        font-weight: bold;
+        color: #0D47A1;
+    }
+    .metric-label {
+        font-size: 1rem;
+        color: #555;
+    }
+    .quality-excellent {
+        color: #4CAF50;
+        font-weight: bold;
+    }
+    .quality-good {
+        color: #8BC34A;
+        font-weight: bold;
+    }
+    .quality-fair {
+        color: #FFC107;
+        font-weight: bold;
+    }
+    .quality-poor {
+        color: #FF9800;
+        font-weight: bold;
+    }
+    .quality-very-poor {
+        color: #F44336;
+        font-weight: bold;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -78,6 +114,18 @@ if "fig" not in st.session_state:
     st.session_state.fig = None
 if "selected_device" not in st.session_state:
     st.session_state.selected_device = None
+if "metrics_fig" not in st.session_state:
+    st.session_state.metrics_fig = None
+if "bleu_score" not in st.session_state:
+    st.session_state.bleu_score = None
+if "wer_score" not in st.session_state:
+    st.session_state.wer_score = None
+if "reference_text" not in st.session_state:
+    st.session_state.reference_text = None
+if "comparison_fig" not in st.session_state:
+    st.session_state.comparison_fig = None
+if "other_models" not in st.session_state:
+    st.session_state.other_models = {}
 
 # Define cleanup handling function
 def cleanup_on_session_end():
@@ -134,6 +182,14 @@ if st.session_state.recorder:
         st.markdown("<div class='card'>", unsafe_allow_html=True)
         if not st.session_state.recording:
             if st.button("🎙️ Start Recording", use_container_width=True):
+                # Reset metrics and comparison state for new recording
+                st.session_state.reference_text = None
+                st.session_state.bleu_score = None
+                st.session_state.wer_score = None
+                st.session_state.metrics_fig = None
+                st.session_state.comparison_fig = None
+                st.session_state.other_models = {}
+
                 st.session_state.recording = True
                 
                 # Store recorder reference to avoid session state issues
@@ -204,12 +260,11 @@ if st.session_state.recorder:
         4. View the results below: transcription, ISL conversion, and audio analysis
         """)
         st.markdown("</div>", unsafe_allow_html=True)
-    
-    # Results section
+      # Results section
     if st.session_state.transcription:
         st.markdown("<h3 class='sub-header'>Results</h3>", unsafe_allow_html=True)
         
-        tabs = st.tabs(["Transcription & ISL", "Audio Analysis", "About"])
+        tabs = st.tabs(["Transcription & ISL", "Audio Analysis", "Translation Metrics", "About"])
         
         with tabs[0]:
             col1, col2 = st.columns(2)
@@ -230,7 +285,6 @@ if st.session_state.recorder:
                 
                 st.markdown("<p><i>Note: ISL typically follows Subject-Object-Verb order and drops articles.</i></p>", unsafe_allow_html=True)
                 st.markdown("</div>", unsafe_allow_html=True)
-        
         with tabs[1]:
             st.markdown("<div class='card'>", unsafe_allow_html=True)
             st.markdown("<h4>Audio Signal Analysis:</h4>", unsafe_allow_html=True)
@@ -239,8 +293,156 @@ if st.session_state.recorder:
             else:
                 st.info("No audio analysis available.")
             st.markdown("</div>", unsafe_allow_html=True)
-        
         with tabs[2]:
+            st.markdown("<div class='card'>", unsafe_allow_html=True)
+            st.markdown("<h4>Translation Quality Metrics:</h4>", unsafe_allow_html=True)
+            
+            # Reference text input
+            if 'reference_text' not in st.session_state or not st.session_state.reference_text:
+                st.markdown("<p>Enter a reference translation to calculate BLEU and WER scores:</p>", unsafe_allow_html=True)
+                reference = st.text_area("Reference Text (ideal translation or gold standard)", 
+                                          placeholder="Enter the correct/expected translation here...",
+                                          key="reference_input")
+                
+                if st.button("Calculate Metrics"):
+                    if reference:
+                        st.session_state.reference_text = reference
+                        
+                        # Initialize evaluator
+                        evaluator = TranslationEvaluator()
+                        
+                        # Calculate BLEU
+                        st.session_state.bleu_score = evaluator.calculate_bleu(
+                            reference, st.session_state.transcription)
+                        
+                        # Calculate WER
+                        st.session_state.wer_score = evaluator.calculate_wer(
+                            reference, st.session_state.transcription)
+                        
+                        # Generate visualization
+                        st.session_state.metrics_fig = evaluator.generate_combined_metrics_visualization(
+                            reference, st.session_state.transcription)
+                        
+                        st.rerun()
+                    else:
+                        st.warning("Please enter a reference text first.")
+            
+            # Display metrics if available
+            if st.session_state.reference_text and st.session_state.bleu_score is not None and st.session_state.wer_score is not None:
+                evaluator = TranslationEvaluator()
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("<div class='metric-card'>", unsafe_allow_html=True)
+                    st.markdown("<p class='metric-label'>BLEU Score (higher is better)</p>", unsafe_allow_html=True)
+                    quality_class = "excellent" if st.session_state.bleu_score > 0.8 else \
+                                   "good" if st.session_state.bleu_score > 0.6 else \
+                                   "fair" if st.session_state.bleu_score > 0.4 else \
+                                   "poor" if st.session_state.bleu_score > 0.2 else "very-poor"
+                    st.markdown(f"<p class='metric-value quality-{quality_class}'>{st.session_state.bleu_score:.3f}</p>", unsafe_allow_html=True)
+                    st.markdown(f"<p>{evaluator.interpret_bleu_score(st.session_state.bleu_score)}</p>", unsafe_allow_html=True)
+                    st.markdown("</div>", unsafe_allow_html=True)
+                
+                with col2:
+                    st.markdown("<div class='metric-card'>", unsafe_allow_html=True)
+                    st.markdown("<p class='metric-label'>Word Error Rate (lower is better)</p>", unsafe_allow_html=True)
+                    quality_class = "excellent" if st.session_state.wer_score < 0.05 else \
+                                   "good" if st.session_state.wer_score < 0.1 else \
+                                   "fair" if st.session_state.wer_score < 0.2 else \
+                                   "poor" if st.session_state.wer_score < 0.3 else "very-poor"
+                    st.markdown(f"<p class='metric-value quality-{quality_class}'>{st.session_state.wer_score:.3f}</p>", unsafe_allow_html=True)
+                    st.markdown(f"<p>{evaluator.interpret_wer(st.session_state.wer_score)}</p>", unsafe_allow_html=True)
+                    st.markdown("</div>", unsafe_allow_html=True)
+                
+                # Show the reference text
+                st.markdown("<h5>Reference Text:</h5>", unsafe_allow_html=True)
+                st.markdown(f"<div class='result-text'>{st.session_state.reference_text}</div>", unsafe_allow_html=True)
+                
+                # Show the visualization
+                if st.session_state.metrics_fig:
+                    st.pyplot(st.session_state.metrics_fig)
+                
+                # MODEL COMPARISON SECTION
+                st.markdown("<h4>Compare with Other Translation Models:</h4>", unsafe_allow_html=True)
+                
+                # Add other model outputs
+                with st.expander("Add other model translations for comparison"):
+                    # Let user add other model translations
+                    model_name = st.text_input("Model Name", placeholder="e.g., Google Translate, OpenNMT, etc.")
+                    model_output = st.text_area("Model's Translation Output", 
+                                           placeholder="Enter the translation output from this model...")
+                    
+                    if st.button("Add Model to Comparison"):
+                        if model_name and model_output:
+                            # Add the model to our comparison dictionary
+                            st.session_state.other_models[model_name] = model_output
+                            st.success(f"✅ Added {model_name} to comparison")
+                            
+                            # Generate new comparison visualization
+                            evaluator = TranslationEvaluator()
+                            st.session_state.comparison_fig = evaluator.compare_with_models(
+                                st.session_state.reference_text,
+                                st.session_state.transcription,
+                                st.session_state.other_models
+                            )
+                            st.rerun()
+                        else:
+                            st.warning("Please enter both model name and its translation output.")
+                
+                # Display model comparison visualization if we have other models
+                if st.session_state.other_models and len(st.session_state.other_models) > 0:
+                    st.markdown("<h5>Model Comparison:</h5>", unsafe_allow_html=True)
+                    
+                    # Show the comparison chart
+                    if st.session_state.comparison_fig:
+                        st.pyplot(st.session_state.comparison_fig)
+                    
+                    # Show all model outputs in a table
+                    st.markdown("<h5>All Model Outputs:</h5>", unsafe_allow_html=True)
+                    
+                    # Create and display a comparison table
+                    models_data = {
+                        "Model": ["Our ISL Model"] + list(st.session_state.other_models.keys()),
+                        "Translation Output": [st.session_state.transcription] + list(st.session_state.other_models.values())
+                    }
+                    
+                    # Display the table
+                    st.table(models_data)
+                    
+                    # Option to remove a model
+                    if len(st.session_state.other_models) > 0:
+                        model_to_remove = st.selectbox("Select model to remove from comparison:", 
+                                                    options=list(st.session_state.other_models.keys()))
+                        if st.button("Remove Selected Model"):
+                            if model_to_remove in st.session_state.other_models:
+                                del st.session_state.other_models[model_to_remove]
+                                # Regenerate comparison visualization
+                                if len(st.session_state.other_models) > 0:
+                                    evaluator = TranslationEvaluator()
+                                    st.session_state.comparison_fig = evaluator.compare_with_models(
+                                        st.session_state.reference_text,
+                                        st.session_state.transcription,
+                                        st.session_state.other_models
+                                    )
+                                else:
+                                    st.session_state.comparison_fig = None
+                                st.success(f"Removed {model_to_remove} from comparison.")
+                                st.rerun()
+                
+                # Add option to reset metrics
+                if st.button("Reset All Metrics and Comparisons"):
+                    st.session_state.reference_text = None
+                    st.session_state.bleu_score = None
+                    st.session_state.wer_score = None
+                    st.session_state.metrics_fig = None
+                    st.session_state.comparison_fig = None
+                    st.session_state.other_models = {}
+                    st.rerun()
+                
+            st.markdown("</div>", unsafe_allow_html=True)
+        
+        with tabs[3]:
             st.markdown("<div class='card'>", unsafe_allow_html=True)
             st.markdown("<h4>About this application:</h4>", unsafe_allow_html=True)
             st.markdown("""
@@ -251,8 +453,12 @@ if st.session_state.recorder:
             3. **Speech Recognition**: Transcribes speech to text 
             4. **ISL Conversion**: Restructures English sentences to follow ISL grammar
             
-            The application shows the original and processed audio signals, along with error analysis
-            to help understand the noise reduction process.
+            The application includes multiple evaluation metrics:
+            - **Audio Signal Analysis**: Shows the original and processed audio signals
+            - **BLEU Score**: Measures translation quality by comparing n-grams
+            - **Word Error Rate (WER)**: Measures the difference between transcription and reference
+            
+            These metrics help assess both the audio processing quality and the accuracy of the translation.
             """)
             st.markdown("</div>", unsafe_allow_html=True)
 
