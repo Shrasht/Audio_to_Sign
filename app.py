@@ -1,93 +1,260 @@
 import streamlit as st
 import numpy as np
-from isl_convert import EnglishToISLSentenceConverter, record_audio, process_speech, visualize_error, transcribe_audio
 import matplotlib.pyplot as plt
-import soundfile as sf
+import os
+import threading
+import datetime
+import time
+from recorder import AudioRecorder, list_audio_devices
+from isl_convert import EnglishToISLSentenceConverter
 
+st.set_page_config(
+    page_title="Speech to ISL Converter",
+    page_icon="🎙️",
+    layout="wide",
+)
 
-RATE = 16000
+# CSS for better UI
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        color: #1E88E5;
+        text-align: center;
+    }
+    .sub-header {
+        font-size: 1.8rem;
+        color: #0D47A1;
+    }
+    .info-text {
+        font-size: 1.2rem;
+    }
+    .status-recording {
+        color: #FF5252;
+        font-weight: bold;
+    }
+    .status-processing {
+        color: #FF9800;
+        font-weight: bold;
+    }
+    .status-complete {
+        color: #4CAF50;
+        font-weight: bold;
+    }
+    .card {
+        background-color: #f8f9fa;
+        border-radius: 10px;
+        padding: 20px;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        margin-bottom: 20px;
+    }
+    .result-text {
+        font-size: 1.5rem;
+        padding: 15px;
+        color:black;
+        background-color: #e3f2fd;
+        border-radius: 10px;
+        margin-top: 10px;
+    }
+</style>
+""", unsafe_allow_html=True)
 
+st.markdown("<h1 class='main-header'>🎙️ Speech to Indian Sign Language Converter</h1>", unsafe_allow_html=True)
 
-print("Streamlit imported successfully:", st.__version__)
-
-
-st.title("🎙️ Speech to ISL Converter")
-
+# Initialize session state variables
+if "recorder" not in st.session_state:
+    st.session_state.recorder = None
 if "recording" not in st.session_state:
     st.session_state.recording = False
-if "audio_data" not in st.session_state:
-    st.session_state.audio_data = None
+if "audio_file" not in st.session_state:
+    st.session_state.audio_file = None
+if "processed_file" not in st.session_state:
+    st.session_state.processed_file = None
+if "transcription" not in st.session_state:
+    st.session_state.transcription = None
+if "isl_output" not in st.session_state:
+    st.session_state.isl_output = None
+if "fig" not in st.session_state:
+    st.session_state.fig = None
+if "selected_device" not in st.session_state:
+    st.session_state.selected_device = None
 
+# Define cleanup handling function
+def cleanup_on_session_end():
+    if st.session_state.recorder and st.session_state.recording:
+        st.session_state.recorder.recording = False
+        st.session_state.recorder.stop_recording()
+        st.session_state.recorder.cleanup()
 
-button_label = "Stop Recording" if st.session_state.recording else "Start Recording"
-if st.button(button_label):
-    if st.session_state.recording:
-       
-        st.session_state.recording = False
-        st.info("Recording paused. Processing your speech...")
+# Register cleanup for when session ends
+try:
+    st.session_state.update({"_on_session_end": cleanup_on_session_end})
+except:
+    pass  # Older versions of Streamlit may not support this
 
-        try:
-          
-            if st.session_state.audio_data is not None:
-                audio_data = st.session_state.audio_data
-                st.session_state.audio_data = None
-            else:
-                st.warning("No audio data recorded.")
-                audio_data = np.zeros(int(RATE * 10), dtype=np.int16) 
-
-           
-            sf.write("debug_raw_audio.wav", audio_data, RATE)  
-            noisy_signal = audio_data / np.max(np.abs(audio_data) + 1e-10)
-            denoised_signal = process_speech(noisy_signal, RATE)
-            fig = visualize_error(noisy_signal, denoised_signal, RATE)
-            denoised_int16 = (denoised_signal * 32767).astype(np.int16)
-            sf.write("debug_denoised_audio.wav", denoised_int16, RATE)
-            transcription = transcribe_audio(denoised_int16)
-            print("Received transcription:", transcription)
-
-          
-            converter = EnglishToISLSentenceConverter()
-            isl_output = converter.convert(transcription)
-            print("ISL output:", isl_output)
-
-            
-            st.success("✅ Transcription:")
-            st.markdown(f"**{transcription if transcription else 'No transcription detected'}**")
-            st.write("Debug: Transcription rendered")
-
-           
-            st.success(" ISL Structured Sentence:")
-            st.markdown(f"**{isl_output if isl_output else 'No ISL output'}**")
-            st.write("Debug: ISL output rendered")
-
-            
-            st.success(" Denoising Visualization:")
-            st.pyplot(fig)
-
-        except Exception as e:
-            st.error(f"Error in audio processing: {str(e)}")
-            import traceback
-            st.text("Full traceback:")
-            st.text(traceback.format_exc())
-            raise
-    else:
-       
-        st.session_state.recording = True
-        st.info("Recording started... Speak now!")
-
-
-if st.session_state.recording:
-    try:
+# Setup section
+with st.expander("Setup Recording Device", expanded=st.session_state.recorder is None):
+    st.markdown("<h3 class='sub-header'>Select Your Microphone</h3>", unsafe_allow_html=True)
+    
+    # Only list devices if we haven't already selected one
+    if st.session_state.recorder is None:
+        input_devices = list_audio_devices()
         
-        audio_data = record_audio()
-        if audio_data is not None:
-            st.session_state.audio_data = audio_data
-            st.info("Recording complete. Click 'Stop Recording' to process.")
+        if not input_devices:
+            st.error("No audio input devices found. Please check your microphone connection.")
         else:
-            st.warning("Recording interrupted.")
-            st.session_state.recording = False
-            st.session_state.audio_data = None
-    except Exception as e:
-        st.error(f"Error during recording: {str(e)}")
-        st.session_state.recording = False
-        st.session_state.audio_data = None
+            device_names = [f"{idx+1}. {device_info.get('name')}" for idx, (_, device_info) in enumerate(input_devices)]
+            selected_option = st.selectbox("Choose your microphone:", options=["Default"] + device_names)
+            
+            if st.button("Confirm Microphone Selection"):
+                if selected_option == "Default":
+                    st.session_state.selected_device = None
+                else:
+                    idx = int(selected_option.split('.')[0]) - 1
+                    device_index, _ = input_devices[idx]
+                    st.session_state.selected_device = device_index
+                
+                st.session_state.recorder = AudioRecorder(input_device_index=st.session_state.selected_device)
+                st.success(f"✅ Microphone selected: {selected_option}")
+               
+    else:
+        st.success("✅ Recording device is configured!")
+        if st.button("Change Microphone"):
+            st.session_state.recorder = None
+            st.experimental_rerun()
+
+# Only show the main interface if recorder is configured
+if st.session_state.recorder:
+    # Main recording interface
+    st.markdown("<h3 class='sub-header'>Record Your Speech</h3>", unsafe_allow_html=True)
+    
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.markdown("<div class='card'>", unsafe_allow_html=True)
+        if not st.session_state.recording:
+            if st.button("🎙️ Start Recording", use_container_width=True):
+                st.session_state.recording = True
+                
+                # Store recorder reference to avoid session state issues
+                recorder_instance = st.session_state.recorder
+                
+                # Start recording in a separate thread to prevent app freezing
+                import threading
+                def start_recording_thread():
+                    recorder_instance.start_recording()
+                
+                # Start the recording thread
+                recording_thread = threading.Thread(target=start_recording_thread)
+                recording_thread.daemon = True
+                recording_thread.start()
+                st.rerun()
+        else:
+            if st.button("⏹️ Stop Recording", use_container_width=True):
+                st.session_state.recording = False
+                
+                with st.spinner("Processing audio..."):
+                    # This will stop the recording that was started in the background
+                    st.session_state.audio_file = st.session_state.recorder.stop_recording()
+                    
+                    if st.session_state.audio_file:
+                        # Process and analyze the audio
+                        processed_file, fig, transcription = st.session_state.recorder.process_audio()
+                        
+                        if transcription:
+                            # Convert to ISL
+                            converter = EnglishToISLSentenceConverter()
+                            isl_output = converter.convert(transcription)
+                            
+                            # Store results in session state
+                            st.session_state.processed_file = processed_file
+                            st.session_state.fig = fig
+                            st.session_state.transcription = transcription
+                            st.session_state.isl_output = isl_output
+                            
+                            st.success("✅ Audio processing complete!")
+                        else:
+                            st.warning("⚠️ Could not transcribe the audio. Please try again with clearer speech.")
+                    else:
+                        st.error("❌ No audio was recorded. Please try again.")
+                
+                st.rerun()
+          # Show current status
+        if st.session_state.recording:
+            st.markdown("<p class='status-recording'>🔴 Recording in progress... Speak now!</p>", unsafe_allow_html=True)
+            st.markdown("<p>Recording will continue until you click 'Stop Recording'</p>", unsafe_allow_html=True)
+            placeholder = st.empty()
+            
+            # Show recording duration
+            current_time = datetime.datetime.now()
+            if 'recording_start_time' not in st.session_state:
+                st.session_state.recording_start_time = current_time
+                
+            duration = current_time - st.session_state.recording_start_time
+            placeholder.text(f"Recording time: {duration.seconds}s")
+            
+        st.markdown("</div>", unsafe_allow_html=True)
+    with col2:
+        st.markdown("<div class='card'>", unsafe_allow_html=True)
+        st.markdown("<h4>Instructions:</h4>", unsafe_allow_html=True)
+        st.markdown("""
+        1. Click **Start Recording** and speak clearly into your microphone
+        2. Click **Stop Recording** when you're done speaking
+        3. Wait for the system to process your speech
+        4. View the results below: transcription, ISL conversion, and audio analysis
+        """)
+        st.markdown("</div>", unsafe_allow_html=True)
+    
+    # Results section
+    if st.session_state.transcription:
+        st.markdown("<h3 class='sub-header'>Results</h3>", unsafe_allow_html=True)
+        
+        tabs = st.tabs(["Transcription & ISL", "Audio Analysis", "About"])
+        
+        with tabs[0]:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("<div class='card'>", unsafe_allow_html=True)
+                st.markdown("<h4>Speech Transcription:</h4>", unsafe_allow_html=True)
+                st.markdown(f"<div class='result-text'>{st.session_state.transcription}</div>", unsafe_allow_html=True)
+                
+                if st.session_state.processed_file and os.path.exists(st.session_state.processed_file):
+                    st.audio(st.session_state.processed_file)
+                st.markdown("</div>", unsafe_allow_html=True)
+            
+            with col2:
+                st.markdown("<div class='card'>", unsafe_allow_html=True)
+                st.markdown("<h4>Indian Sign Language Structure:</h4>", unsafe_allow_html=True)
+                st.markdown(f"<div class='result-text'>{st.session_state.isl_output}</div>", unsafe_allow_html=True)
+                
+                st.markdown("<p><i>Note: ISL typically follows Subject-Object-Verb order and drops articles.</i></p>", unsafe_allow_html=True)
+                st.markdown("</div>", unsafe_allow_html=True)
+        
+        with tabs[1]:
+            st.markdown("<div class='card'>", unsafe_allow_html=True)
+            st.markdown("<h4>Audio Signal Analysis:</h4>", unsafe_allow_html=True)
+            if st.session_state.fig:
+                st.pyplot(st.session_state.fig)
+            else:
+                st.info("No audio analysis available.")
+            st.markdown("</div>", unsafe_allow_html=True)
+        
+        with tabs[2]:
+            st.markdown("<div class='card'>", unsafe_allow_html=True)
+            st.markdown("<h4>About this application:</h4>", unsafe_allow_html=True)
+            st.markdown("""
+            This application converts spoken language to Indian Sign Language (ISL) structure through:
+            
+            1. **Audio Recording**: Captures clean speech with adaptive noise filtering
+            2. **Signal Processing**: Removes noise using wavelets and adaptive filtering
+            3. **Speech Recognition**: Transcribes speech to text 
+            4. **ISL Conversion**: Restructures English sentences to follow ISL grammar
+            
+            The application shows the original and processed audio signals, along with error analysis
+            to help understand the noise reduction process.
+            """)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+else:
+    st.info("Please configure your microphone to continue.")
